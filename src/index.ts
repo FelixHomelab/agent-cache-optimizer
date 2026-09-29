@@ -916,15 +916,16 @@ export default {
     const hooks = (await CacheOptimizerPlugin({} as any)) as Record<string, any>
     const reorder = hooks["experimental.chat.system.transform"]
     if (typeof reorder === "function") {
-      await ctx.session.hook("context", async (input: any, output: any) => {
-        const blocks = Array.isArray(output?.system) ? output.system : []
+      await ctx.session.hook("context", async (input: any, _output: any) => {
+        // 实测（OpenCode 2.0.18）：system 块在 input.system 上（output 为 undefined）
+        const blocks = Array.isArray(input?.system) ? input.system : []
         if (blocks.length <= 1) return
         const texts = blocks.map((b: any) => (typeof b === "string" ? b : String(b?.text ?? "")))
         const sink: { system: string[] } = { system: texts }
         await reorder({ sessionID: input?.sessionID, model: input?.model }, sink)
         const next = sink.system
         if (!Array.isArray(next) || next.length !== blocks.length) return
-        output.system = blocks.map((b: any, i: number) =>
+        input.system = blocks.map((b: any, i: number) =>
           typeof b === "string" ? next[i] : { ...b, text: next[i] },
         )
       })
