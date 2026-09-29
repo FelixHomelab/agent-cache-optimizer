@@ -900,3 +900,47 @@ export {
 export { coldStartScore, classify } from "./heuristics"
 export { splitBlock, splitAll } from "./splitting"
 export type { StabilityDB, Classified, BlockFingerprint, CacheOptimizerOptions } from "./types"
+
+// ── Felix 适配：OpenCode 2.x 的 v2 插件接口 ───────────────────────────────
+// OpenCode 2.0.18 起只接受 v2 模块形状（default 导出 {id, setup}），并且不再触发
+// v1 hooks（experimental.chat.system.transform）。v2 的等价钩子是：
+//   ctx.session.hook("context", (input, output))
+//     input:  { sessionID, model: { id, providerID, variant } }
+//     output: { system: [{ type: "text", text: "..." }, ...] }
+// 这里把 v2 系统块取出为字符串数组，复用上面的 v1 重排实现，再写回对象数组。
+// 已知差异：Anthropic 的 chat.headers（prompt-caching beta 头）在 v2 暂无能注册的
+// 对应钩子；核心的稳定块前置/缓存命中提升不受影响。事件指标尽力转发。
+export default {
+  id: "agent-cache-optimizer",
+  setup: async (ctx: any) => {
+    const hooks = (await CacheOptimizerPlugin({} as any)) as Record<string, any>
+    const reorder = hooks["experimental.chat.system.transform"]
+    if (typeof reorder === "function") {
+      await ctx.session.hook("context", async (input: any, output: any) => {
+        const blocks = Array.isArray(output?.system) ? output.system : []
+        if (blocks.length <= 1) return
+        const texts = blocks.map((b: any) => (typeof b === "string" ? b : String(b?.text ?? "")))
+        const sink: { system: string[] } = { system: texts }
+        await reorder({ sessionID: input?.sessionID, model: input?.model }, sink)
+        const next = sink.system
+        if (!Array.isArray(next) || next.length !== blocks.length) return
+        output.system = blocks.map((b: any, i: number) =>
+          typeof b === "string" ? next[i] : { ...b, text: next[i] },
+        )
+      })
+    }
+    const onEvent = hooks["event"]
+    if (typeof onEvent === "function" && typeof ctx.event?.subscribe === "function") {
+      try {
+        const stream = ctx.event.subscribe()
+        if (stream && typeof stream[Symbol.asyncIterator] === "function") {
+          ;(async () => {
+            for await (const ev of stream) {
+              try { await onEvent(ev) } catch {}
+            }
+          })().catch(() => {})
+        }
+      } catch {}
+    }
+  },
+}
